@@ -1,113 +1,266 @@
 #!/usr/bin/env python3
-"""Web interface for AiCheck - upload Word file and get PDF reports."""
+"""AiCheck dashboard: auth, history, results, prompts, statistics, background checks."""
 
 import os
-import tempfile
+import uuid
 from pathlib import Path
 
 import streamlit as st
 from dotenv import load_dotenv
 
-from src.agent import analyze_tests_auto, MAX_INPUT_CHARS
-from src.doc_loader import load_document
-from src.pdf_generator import generate_pdf
-from src.translator import get_report_in_language
+from src.db import (
+    create_task,
+    get_check_result,
+    get_stats,
+    get_task,
+    init_db,
+    list_check_results,
+    list_tasks,
+    set_prompts,
+)
+from src.prompts import get_prompts
+from src.worker import start_worker_thread
 
 load_dotenv()
+init_db()
+# Start background worker once (process-level)
+start_worker_thread()
 
 st.set_page_config(
-    page_title="AiCheck — Проверка качества тестов",
+    page_title="AiCheck — Дашборд",
     page_icon="📋",
-    layout="centered",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+# Session state
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "username" not in st.session_state:
+    st.session_state.username = ""
+if "view_result_id" not in st.session_state:
+    st.session_state.view_result_id = None
 if "results_ready" not in st.session_state:
     st.session_state.results_ready = False
+if "last_result_id" not in st.session_state:
+    st.session_state.last_result_id = None
+if "pdfs" not in st.session_state:
     st.session_state.pdfs = {}
+if "risk_level" not in st.session_state:
     st.session_state.risk_level = ""
+if "last_queued_task_id" not in st.session_state:
+    st.session_state.last_queued_task_id = None
 
-st.title("AiCheck")
-st.markdown("**Проверка качества тестовых заданий** — загрузите Word-файл (.docx) с банком тестов.")
 
-if st.session_state.results_ready:
-    st.success(f"Анализ завершён. Уровень риска: **{st.session_state.risk_level}**")
-    cols = st.columns(3)
-    lang_names = {"ru": "Русский", "kk": "Қазақша", "en": "English"}
-    for col, (lang, pdf_bytes) in zip(cols, st.session_state.pdfs.items()):
-        with col:
-            st.download_button(
-                f"Скачать {lang_names[lang]}",
-                data=pdf_bytes,
-                file_name=f"заключение_{lang}.pdf",
-                mime="application/pdf",
-                key=f"dl_{lang}",
-            )
-    if st.button("Новая проверка", type="secondary"):
-        st.session_state.results_ready = False
-        st.session_state.pdfs = {}
-        st.session_state.risk_level = ""
+def check_credentials(username: str, password: str) -> bool:
+    u = os.getenv("DASHBOARD_USER", "").strip()
+    p = os.getenv("DASHBOARD_PASSWORD", "").strip()
+    if not u or not p:
+        return False
+    return username == u and password == p
+
+
+def login_page():
+    st.title("Вход в дашборд AiCheck")
+    st.markdown("Укажите логин и пароль из настроек (.env).")
+    with st.form("login"):
+        user = st.text_input("Логин", key="login_user")
+        pwd = st.text_input("Пароль", type="password", key="login_pwd")
+        submitted = st.form_submit_button("Войти")
+    if submitted:
+        if not user or not pwd:
+            st.error("Введите логин и пароль.")
+        elif not os.getenv("DASHBOARD_USER") or not os.getenv("DASHBOARD_PASSWORD"):
+            st.error("DASHBOARD_USER и DASHBOARD_PASSWORD не заданы в .env. Настройте креды.")
+        elif check_credentials(user, pwd):
+            st.session_state.authenticated = True
+            st.session_state.username = user
+            st.rerun()
+        else:
+            st.error("Неверный логин или пароль.")
+
+
+def page_new_check():
+    st.subheader("Новая проверка")
+    st.markdown("Загрузите файл .docx — проверка будет добавлена в очередь и выполнится в фоне. Обновите страницу «Проверки» для отслеживания.")
+    uploaded_file = st.file_uploader(
+        "Файл .docx",
+        type=["docx"],
+        help="Документ может быть на казахском, русском или английском.",
+        key="upload_new",
+    )
+    if not uploaded_file:
+        return
+    if not os.getenv("OPENAI_API_KEY"):
+        st.error("OPENAI_API_KEY не задан в .env.")
+        return
+    if st.button("Добавить в очередь", type="primary", key="run_analysis"):
+        uploads_dir = Path("data/uploads")
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        path = uploads_dir / f"{uuid.uuid4().hex}.docx"
+        path.write_bytes(uploaded_file.getvalue())
+        task_id = create_task(str(path), uploaded_file.name)
+        st.success(f"Проверка **#{task_id}** добавлена в очередь. Перейдите в раздел **Проверки** для отслеживания статуса.")
+        st.session_state.last_queued_task_id = task_id
         st.rerun()
+
+    if st.session_state.get("last_queued_task_id"):
+        st.info(f"Последняя добавленная задача: #{st.session_state.last_queued_task_id}. Обновите страницу «Проверки».")
+
+
+def page_tasks():
+    st.subheader("Проверки")
+    st.markdown("Список всех проверок: в очереди, в процессе, завершённые, с ошибкой. Обновите страницу для актуального статуса.")
+    tasks = list_tasks(limit=100)
+    if not tasks:
+        st.info("Проверок пока нет. Добавьте задачу в разделе «Новая проверка».")
+        return
+    status_labels = {
+        "pending": "В очереди",
+        "in_progress": "В процессе",
+        "completed": "Завершена",
+        "error": "Ошибка",
+    }
+    for t in tasks:
+        status = t.get("status") or "pending"
+        label = status_labels.get(status, status)
+        col1, col2, col3, col4, col5, col6 = st.columns([1, 2, 1, 1, 1, 1])
+        with col1:
+            st.text(f"#{t['id']}")
+        with col2:
+            st.text((t.get("created_at") or "")[:19] + " " + (t.get("file_name") or "—"))
+        with col3:
+            st.caption(label)
+        with col4:
+            st.text(t.get("detected_language") or "—")
+        with col5:
+            st.text(t.get("risk_level") or "—")
+        with col6:
+            if status == "completed" and t.get("result_id"):
+                if st.button("Открыть", key=f"task_open_{t['id']}"):
+                    st.session_state.view_result_id = t["result_id"]
+                    st.rerun()
+            elif status == "error" and t.get("error_message"):
+                st.caption(t["error_message"][:80] + ("…" if len(t.get("error_message", "") or "") > 80 else ""))
     st.divider()
 
-uploaded_file = st.file_uploader(
-    "Выберите файл .docx",
-    type=["docx"],
-    help="Документ может быть на казахском, русском или английском языке",
-)
 
-if uploaded_file is not None and not st.session_state.results_ready:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        st.error("OPENAI_API_KEY не задан. Создайте файл .env из .env.example и укажите ключ.")
-        st.stop()
-
-    if st.button("Запустить анализ", type="primary"):
-        with st.spinner("Обработка..."):
-            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
-
-            try:
-                progress = st.progress(0, text="Загрузка документа...")
-                file_text, detected_lang = load_document(tmp_path)
-                progress.progress(20, text=f"Язык: {detected_lang}. Анализ через ИИ...")
-
-                if not file_text.strip():
-                    st.error("Документ пуст или текст не извлечён.")
-                    os.unlink(tmp_path)
-                    st.stop()
-
-                if len(file_text) > MAX_INPUT_CHARS:
-                    st.info(f"Документ большой ({len(file_text):,} символов). Будет чанковая обработка — все вопросы будут проверены.")
-
-                assessment = analyze_tests_auto(file_text, detected_lang, api_key)
-                progress.progress(50, text="Формирование PDF-отчётов...")
-
-                output_dir = Path(tempfile.mkdtemp())
-                ru_dir = output_dir / "ru_pdf"
-                kk_dir = output_dir / "kk_pdf"
-                en_dir = output_dir / "en_pdf"
-                for d in (ru_dir, kk_dir, en_dir):
-                    d.mkdir(parents=True, exist_ok=True)
-
-                for lang, out_dir in [("ru", ru_dir), ("kk", kk_dir), ("en", en_dir)]:
-                    report_text = get_report_in_language(assessment, lang, api_key, detected_lang)
-                    out_file = out_dir / "заключение.pdf"
-                    generate_pdf(report_text, out_file, assessment_data=assessment)
-
-                progress.progress(100, text="Готово!")
-
-                pdfs = {}
-                for lang, out_dir in [("ru", ru_dir), ("kk", kk_dir), ("en", en_dir)]:
-                    pdf_path = out_dir / "заключение.pdf"
-                    with open(pdf_path, "rb") as f:
-                        pdfs[lang] = f.read()
-                st.session_state.pdfs = pdfs
-                st.session_state.risk_level = assessment.get("risk_level", "N/A")
-                st.session_state.results_ready = True
+def page_history():
+    st.subheader("История запросов (завершённые)")
+    rows = list_check_results(limit=100)
+    if not rows:
+        st.info("Проверок пока нет.")
+        return
+    for r in rows:
+        col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
+        with col1:
+            st.text(f"{r['created_at'][:19] if r.get('created_at') else '—'} {r.get('file_name') or ''}")
+        with col2:
+            st.text(r.get("detected_language", "—"))
+        with col3:
+            st.text(r.get("risk_level", "—"))
+        with col4:
+            st.text(str(r.get("total_tokens", 0)))
+        with col5:
+            if st.button("Открыть", key=f"open_{r['id']}"):
+                st.session_state.view_result_id = r["id"]
                 st.rerun()
+    st.divider()
 
-            except Exception as e:
-                st.exception(e)
-            finally:
-                os.unlink(tmp_path)
+
+def page_result():
+    rid = st.session_state.get("view_result_id")
+    if not rid:
+        st.info("Выберите запись в «История» или выполните новую проверку.")
+        return
+    st.subheader(f"Результат проверки #{rid}")
+    row = get_check_result(rid)
+    if not row:
+        st.warning("Запись не найдена.")
+        return
+    st.caption(f"Дата: {row.get('created_at')} | Язык: {row.get('detected_language')} | Риск: {row.get('risk_level')} | Токенов: {row.get('total_tokens')}")
+    assessment = row.get("assessment")
+    if not assessment:
+        st.write("Нет данных оценки.")
+        return
+    with st.expander("Общая оценка", expanded=True):
+        st.write(assessment.get("overall_assessment", ""))
+    st.write("**Уровень риска:**", assessment.get("risk_level", "—"))
+    with st.expander("Основные выводы"):
+        for f in assessment.get("major_findings", []):
+            st.write(f"**[{f.get('severity')}]** {f.get('title')}")
+            st.write(f.get("details", ""))
+    with st.expander("Оценки качества (0–10)"):
+        qs = assessment.get("quality_scores", {})
+        st.json(qs)
+    with st.expander("Полный JSON"):
+        st.json(assessment)
+    if st.button("← К истории"):
+        st.session_state.view_result_id = None
+        st.rerun()
+
+
+def page_prompts():
+    st.subheader("Редактирование промптов")
+    prompts = get_prompts()
+    system = prompts.get("system_message") or ""
+    user_tpl = prompts.get("user_message_template") or ""
+    system_new = st.text_area("System message", value=system, height=200, key="prompt_system")
+    user_new = st.text_area("User message template (placeholders: {detected_language}, {file_text})", value=user_tpl, height=300, key="prompt_user")
+    if st.button("Сохранить промпты"):
+        set_prompts(system_new, user_new)
+        st.success("Промпты сохранены. Следующие проверки будут использовать новый текст.")
+
+
+def page_stats():
+    import pandas as pd
+    st.subheader("Статистика")
+    stats = get_stats()
+    total_checks = stats.get("total_checks", 0)
+    total_tokens = stats.get("total_tokens", 0)
+    by_lang = stats.get("by_language", {})
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Всего проверок", total_checks)
+    with c2:
+        st.metric("Всего использовано токенов", f"{total_tokens:,}")
+    if by_lang:
+        st.write("**Проверок по языкам**")
+        df = pd.DataFrame(list(by_lang.items()), columns=["Язык", "Количество"])
+        st.bar_chart(df.set_index("Язык"))
+    else:
+        st.info("Нет данных по языкам.")
+
+
+def main():
+    if not st.session_state.authenticated:
+        login_page()
+        return
+    st.sidebar.title("AiCheck")
+    st.sidebar.caption(f"Вход: {st.session_state.username}")
+    page = st.sidebar.radio(
+        "Раздел",
+        ["Новая проверка", "Проверки", "История", "Результат", "Промпты", "Статистика"],
+        label_visibility="collapsed",
+    )
+    if st.sidebar.button("Выход"):
+        st.session_state.authenticated = False
+        st.session_state.username = ""
+        st.session_state.view_result_id = None
+        st.rerun()
+    if page == "Новая проверка":
+        page_new_check()
+    elif page == "Проверки":
+        page_tasks()
+    elif page == "История":
+        page_history()
+    elif page == "Результат":
+        page_result()
+    elif page == "Промпты":
+        page_prompts()
+    else:
+        page_stats()
+
+
+if __name__ == "__main__":
+    main()

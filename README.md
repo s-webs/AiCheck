@@ -16,21 +16,54 @@ cp .env.example .env
 # Отредактируйте .env и укажите OPENAI_API_KEY
 ```
 
-## Порт (Ubuntu server)
+## Порты
 
-По умолчанию сервис слушает порт **41791** — он выбран так, чтобы не пересекаться с типичными сервисами (22, 80, 443, 3000, 5000, 8000, 8080, 8501 и т.д.). Порт задаётся переменной `PORT` в `.env` (или `AICHECK_PORT`).
+API и дашборд работают на **разных портах** (в `.env`):
+
+- **AICHECK_API_PORT** — REST API (по умолчанию 41791)
+- **AICHECK_DASHBOARD_PORT** — веб-дашборд Streamlit (по умолчанию 41792)
+
+### Запуск API и дашборда одним скриптом
+
+Скрипт читает порты из `.env` и запускает обе части приложения:
+
+```bash
+python run_all.py
+```
+
+Остановка: **Ctrl+C** в консоли (остановит и API, и дашборд).
+
+**Автозагрузка (Windows):** добавьте в автозагрузку запуск, например:
+- Ярлык в папке «Автозагрузка» (`Win+R` → `shell:startup`): целевой объект `python C:\путь\к\AiCheck\run_all.py`, рабочая папка `C:\путь\к\AiCheck`.
+- Или задание в Планировщике заданий: при входе в систему запускать `python run_all.py`, начальная папка — каталог проекта.
 
 ## Использование
 
-### Веб-интерфейс
+### Веб-дашборд (Streamlit)
+
+В `.env` задайте логин и пароль для входа в дашборд: `DASHBOARD_USER` и `DASHBOARD_PASSWORD` (см. `.env.example`).
 
 ```bash
-python -m streamlit run app.py --server.port ${PORT:-41791} --server.address 0.0.0.0
-# или на Ubuntu:
+# Windows (PowerShell): порт из .env или явно
+$env:AICHECK_DASHBOARD_PORT = 41792
+python -m streamlit run app.py --server.port $env:AICHECK_DASHBOARD_PORT --server.address 0.0.0.0
+
+# Linux/macOS (bash):
+python -m streamlit run app.py --server.port ${AICHECK_DASHBOARD_PORT:-41792} --server.address 0.0.0.0
+# или:
 chmod +x scripts/run_streamlit.sh && ./scripts/run_streamlit.sh
 ```
 
-Откройте браузер по адресу http://localhost:41791 (или ваш `PORT`) и загрузите файл .docx.
+Откройте в браузере http://localhost:41792 (или ваш `AICHECK_DASHBOARD_PORT`), войдите по логину и паролю. В дашборде доступны:
+
+- **Новая проверка** — загрузка .docx, постановка в очередь (проверка идёт в фоне).
+- **Проверки** — список задач (в очереди, в процессе, завершена, ошибка).
+- **История** — завершённые проверки (дата, язык, риск, токены), переход к результату.
+- **Результат** — просмотр сохранённого заключения по выбранной проверке.
+- **Промпты** — редактирование системного и пользовательского промптов агента (сохраняются в БД).
+- **Статистика** — количество проверок, суммарно использовано токенов, распределение по языкам (RU/KK/EN).
+
+Результаты и история хранятся в SQLite (по умолчанию `data/aicheck.db`; путь задаётся через `DATABASE_URL` в `.env`).
 
 ### CLI
 
@@ -45,13 +78,13 @@ python main.py path/to/tests.docx [--output-dir ./output]
 
 ### REST API (интеграция с Laravel и др.)
 
-Запуск API-сервера (порт из `PORT` в .env, по умолчанию 41791):
+Запуск API-сервера (порт из `AICHECK_API_PORT` в .env, по умолчанию 41791):
 
 ```bash
 python api.py
 # или
-python -m uvicorn api:app --host 0.0.0.0 --port ${PORT:-41791}
-# на Ubuntu:
+python -m uvicorn api:app --host 0.0.0.0 --port ${AICHECK_API_PORT:-41791}
+# Linux/macOS:
 chmod +x scripts/run_api.sh && ./scripts/run_api.sh
 ```
 
@@ -83,7 +116,7 @@ use Illuminate\Support\Facades\Http;
 
 $response = Http::timeout(300)
     ->attach('file', file_get_contents($pathToDocx), 'tests.docx')
-    ->post(config('services.aicheck.url', 'http://localhost:41791') . '/analyze');
+    ->post(config('services.aicheck.url', 'http://localhost:41791') . '/analyze');  // AICHECK_API_PORT
 
 if ($response->successful()) {
     $data = $response->json();

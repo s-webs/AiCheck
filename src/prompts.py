@@ -1,5 +1,7 @@
 """Prompts and JSON schema for the test quality assessment agent."""
 
+from . import db as _db
+
 SYSTEM_MESSAGE = """Ты — эксперт по оценке качества тестовых заданий в медицинском образовании (item review).
 Проводи аудит банка тестов в целом: выявляй системные проблемы, риск для валидности, типовые ошибки и давай план улучшений.
 Если в тексте нет ключа правильных ответов — НЕ утверждай медицинскую истинность, а помечай риски и требование экспертной верификации.
@@ -61,6 +63,25 @@ USER_MESSAGE_TEMPLATE = """Сделай ОБЩЕЕ развернутое зак
 
 Текст тестов:
 {file_text}"""
+
+
+def get_prompts() -> dict[str, str]:
+    """
+    Get current prompts from DB. If DB is empty, seed from default constants and return them.
+    Returns {"system_message": str, "user_message_template": str}.
+    """
+    stored = _db.get_prompts()
+    if not stored:
+        _db.init_db()
+        _db.seed_prompts_if_empty(SYSTEM_MESSAGE, USER_MESSAGE_TEMPLATE)
+        stored = _db.get_prompts()
+    if not stored:
+        return {"system_message": SYSTEM_MESSAGE, "user_message_template": USER_MESSAGE_TEMPLATE}
+    return {
+        "system_message": stored.get("system_message") or SYSTEM_MESSAGE,
+        "user_message_template": stored.get("user_message_template") or USER_MESSAGE_TEMPLATE,
+    }
+
 
 # JSON schema for OpenAI Structured Outputs
 JSON_SCHEMA = {

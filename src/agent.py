@@ -6,7 +6,7 @@ import time
 from openai import OpenAI, RateLimitError
 
 from .doc_loader import split_into_question_chunks
-from .prompts import SYSTEM_MESSAGE, USER_MESSAGE_TEMPLATE, JSON_SCHEMA
+from .prompts import get_prompts, JSON_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +26,31 @@ REQUIRED_KEYS = [
 ]
 
 
-def _call_api(client: OpenAI, user_message: str, attempt: int, use_json_object: bool = False):
+def _usage_from_response(response) -> dict:
+    """Extract usage dict from OpenAI response (prompt_tokens, completion_tokens, total_tokens)."""
+    u = getattr(response, "usage", None)
+    if not u:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    return {
+        "prompt_tokens": getattr(u, "prompt_tokens", 0) or 0,
+        "completion_tokens": getattr(u, "completion_tokens", 0) or 0,
+        "total_tokens": getattr(u, "total_tokens", 0) or 0,
+    }
+
+
+def _call_api(
+    client: OpenAI,
+    system_message: str,
+    user_message: str,
+    attempt: int,
+    use_json_object: bool = False,
+):
     """Call OpenAI API with structured output or json_object."""
     fmt = {"type": "json_object"} if use_json_object else JSON_SCHEMA
     return client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": SYSTEM_MESSAGE},
+            {"role": "system", "content": system_message},
             {"role": "user", "content": user_message},
         ],
         response_format=fmt,
@@ -46,30 +64,32 @@ def analyze_tests(
     api_key: str | None = None,
     *,
     chunk_context: str | None = None,
-) -> dict:
+) -> tuple[dict, dict]:
     """
     Call OpenAI API to analyze test bank quality.
-    Returns parsed JSON assessment.
+    Returns (parsed JSON assessment, usage dict with prompt_tokens, completion_tokens, total_tokens).
     file_text must be within MAX_INPUT_CHARS (caller is responsible for chunking).
     chunk_context: optional note like "Чанк 2 из 5, вопросы 21-40" for chunked mode.
     """
     if chunk_context:
         file_text = f"[{chunk_context}]\n\n{file_text}"
 
-    client = OpenAI(api_key=api_key)
-    user_message = USER_MESSAGE_TEMPLATE.format(
+    prompts = get_prompts()
+    system_message = prompts["system_message"]
+    user_message = prompts["user_message_template"].format(
         detected_language=detected_language,
         file_text=file_text,
     )
 
+    client = OpenAI(api_key=api_key)
     for attempt in range(5):  # 5 attempts to allow retries on rate limit
         try:
             try:
-                response = _call_api(client, user_message, attempt)
+                response = _call_api(client, system_message, user_message, attempt)
             except Exception as api_err:
                 if "json_schema" in str(api_err).lower() or "schema" in str(api_err).lower():
                     logger.warning("Structured output failed, falling back to JSON mode: %s", api_err)
-                    response = _call_api(client, user_message, attempt, use_json_object=True)
+                    response = _call_api(client, system_message, user_message, attempt, use_json_object=True)
                 else:
                     raise
 
@@ -79,7 +99,8 @@ def analyze_tests(
 
             data = json.loads(content)
             _validate_assessment(data)
-            return data
+            usage = _usage_from_response(response)
+            return (data, usage)
 
         except RateLimitError as e:
             wait = 60 * (attempt + 1)  # 60, 120, 180, 240 sec
@@ -95,7 +116,8 @@ def analyze_tests(
                 try:
                     data = json.loads(content)
                     _validate_assessment(data)
-                    return data
+                    usage = _usage_from_response(response)
+                    return (data, usage)
                 except (json.JSONDecodeError, ValueError):
                     continue
             raise
@@ -238,9 +260,10 @@ def analyze_tests_chunked(
     file_text: str,
     detected_language: str,
     api_key: str | None = None,
-) -> dict:
+) -> tuple[dict, dict]:
     """
     Analyze large document by splitting into question chunks and merging results.
+    Returns (merged assessment, combined usage dict).
     """
     chunks = split_into_question_chunks(file_text, MAX_CHUNKED_CHARS)
     if not chunks:
@@ -248,6 +271,7 @@ def analyze_tests_chunked(
 
     logger.info("Чанковая обработка: %d чанков", len(chunks))
     assessments: list[tuple[dict, int]] = []
+    combined_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     for i, (chunk_text, offset) in enumerate(chunks):
         if i > 0:
@@ -255,10 +279,14 @@ def analyze_tests_chunked(
             time.sleep(65)
         ctx = f"Чанк {i + 1} из {len(chunks)}, вопросы с №{offset}"
         logger.info("Анализ %s...", ctx)
-        data = analyze_tests(chunk_text, detected_language, api_key, chunk_context=ctx)
+        data, usage = analyze_tests(chunk_text, detected_language, api_key, chunk_context=ctx)
         assessments.append((data, offset))
+        combined_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+        combined_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+        combined_usage["total_tokens"] += usage.get("total_tokens", 0)
 
-    return _merge_assessments(assessments)
+    merged = _merge_assessments(assessments)
+    return (merged, combined_usage)
 
 
 def analyze_tests_auto(
@@ -268,8 +296,11 @@ def analyze_tests_auto(
 ) -> dict:
     """
     Analyze test bank. Uses single API call if within limit, else chunked processing.
+    Returns dict with keys: "assessment" (the assessment JSON), "usage" (prompt_tokens, completion_tokens, total_tokens).
     """
     if len(file_text) <= MAX_INPUT_CHARS:
-        return analyze_tests(file_text, detected_language, api_key)
+        assessment, usage = analyze_tests(file_text, detected_language, api_key)
+        return {"assessment": assessment, "usage": usage}
     logger.info("Документ большой (%d символов), используется чанковая обработка", len(file_text))
-    return analyze_tests_chunked(file_text, detected_language, api_key)
+    assessment, usage = analyze_tests_chunked(file_text, detected_language, api_key)
+    return {"assessment": assessment, "usage": usage}

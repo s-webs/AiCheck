@@ -11,11 +11,13 @@ from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.agent import analyze_tests_auto, MAX_INPUT_CHARS
+from src.db import init_db, insert_check_result
 from src.doc_loader import load_document
 from src.pdf_generator import generate_pdf
 from src.translator import get_report_in_language
 
 load_dotenv()
+init_db()
 
 app = FastAPI(
     title="AiCheck API",
@@ -101,7 +103,9 @@ def analyze(
                 detail="Document is empty or text could not be extracted.",
             )
 
-        assessment = analyze_tests_auto(file_text, detected_lang, api_key)
+        result = analyze_tests_auto(file_text, detected_lang, api_key)
+        assessment = result["assessment"]
+        usage = result.get("usage") or {}
         risk_level = assessment.get("risk_level", "N/A")
 
         pdfs_b64 = {}
@@ -117,6 +121,16 @@ def analyze(
                 output_stream=buffer,
             )
             pdfs_b64[lang] = base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        insert_check_result(
+            detected_language=detected_lang,
+            risk_level=risk_level,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            assessment=assessment,
+            file_name=file.filename,
+        )
 
         return {
             "risk_level": risk_level,
@@ -148,8 +162,8 @@ def analyze_short(
 
 
 def _get_port() -> int:
-    """Port for server (default 41791 — unique to avoid conflicts with common services)."""
-    return int(os.getenv("PORT", os.getenv("AICHECK_PORT", "41791")))
+    """Port for API server (AICHECK_API_PORT, or legacy PORT)."""
+    return int(os.getenv("AICHECK_API_PORT", os.getenv("PORT", "41791")))
 
 
 if __name__ == "__main__":
