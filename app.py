@@ -93,7 +93,7 @@ if uploaded_file is not None and not st.session_state.results_ready:
                 for lang, out_dir in [("ru", ru_dir), ("kk", kk_dir), ("en", en_dir)]:
                     report_text = get_report_in_language(assessment, lang, api_key, detected_lang)
                     out_file = out_dir / "заключение.pdf"
-                    generate_pdf(report_text, out_file)
+                    generate_pdf(report_text, out_file, assessment_data=assessment)
 
                 progress.progress(100, text="Готово!")
 

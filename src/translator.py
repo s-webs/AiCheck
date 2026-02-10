@@ -49,13 +49,22 @@ def json_to_report_text(data: dict) -> str:
         "no_clues": "Отсутствие подсказок",
         "language": "Языковая корректность",
         "structure_consistency": "Структурная согласованность",
+        "difficulty_balance": "Баланс сложности",
+        "content_accuracy": "Точность содержания",
+        "formatting_quality": "Качество форматирования",
+        "answer_key_quality": "Качество ключа ответов",
     }
     for key, label in labels.items():
         val = qs.get(key, "—")
         lines.append(f"  {label}: {val}")
     lines.append("")
+    
+    lines.append("4. АНАЛИТИЧЕСКИЕ ГРАФИКИ")
+    lines.append("-" * 40)
+    lines.append("Графики представлены ниже.")
+    lines.append("")
 
-    lines.append("4. ТИПОВЫЕ ОШИБКИ И ШАБЛОНЫ ИСПРАВЛЕНИЯ")
+    lines.append("5. ТИПОВЫЕ ОШИБКИ И ШАБЛОНЫ ИСПРАВЛЕНИЯ")
     lines.append("-" * 40)
     for i, ep in enumerate(data.get("common_error_patterns", []), 1):
         lines.append(f"{i}. Паттерн: {ep.get('pattern', '')}")
@@ -65,7 +74,7 @@ def json_to_report_text(data: dict) -> str:
         lines.append("")
     lines.append("")
 
-    lines.append("5. ПЛАН ДЕЙСТВИЙ (ЮКМА)")
+    lines.append("6. ПЛАН ДЕЙСТВИЙ (ЮКМА)")
     lines.append("-" * 40)
     for ap in data.get("action_plan", []):
         step = ap.get("step", "")
@@ -78,7 +87,7 @@ def json_to_report_text(data: dict) -> str:
         lines.append("")
     lines.append("")
 
-    lines.append("6. ВЫБОРОЧНАЯ ПРОВЕРКА")
+    lines.append("7. ВЫБОРОЧНАЯ ПРОВЕРКА")
     lines.append("-" * 40)
     sc = data.get("spot_check", {})
     sample_size = sc.get("sample_size", 0)

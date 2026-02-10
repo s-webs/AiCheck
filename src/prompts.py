@@ -43,7 +43,11 @@ USER_MESSAGE_TEMPLATE = """Сделай ОБЩЕЕ развернутое зак
     "distractors": number,
     "no_clues": number,
     "language": number,
-    "structure_consistency": number
+    "structure_consistency": number,
+    "difficulty_balance": number,
+    "content_accuracy": number,
+    "formatting_quality": number,
+    "answer_key_quality": number
   }},
   "common_error_patterns": [
     {{"pattern":"string","why_bad":"string","how_to_fix":"string","example_rewrite_template":"string"}}
@@ -97,6 +101,10 @@ JSON_SCHEMA = {
                         "no_clues": {"type": "number"},
                         "language": {"type": "number"},
                         "structure_consistency": {"type": "number"},
+                        "difficulty_balance": {"type": "number"},
+                        "content_accuracy": {"type": "number"},
+                        "formatting_quality": {"type": "number"},
+                        "answer_key_quality": {"type": "number"},
                     },
                     "required": [
                         "clarity",
@@ -105,6 +113,10 @@ JSON_SCHEMA = {
                         "no_clues",
                         "language",
                         "structure_consistency",
+                        "difficulty_balance",
+                        "content_accuracy",
+                        "formatting_quality",
+                        "answer_key_quality",
                     ],
                     "additionalProperties": False,
                 },

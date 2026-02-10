@@ -79,7 +79,7 @@ def main() -> int:
             logger.info("Формирование отчёта на %s...", lang.upper())
             report_text = get_report_in_language(assessment, lang, api_key, detected_lang)
             out_file = out_dir / "заключение.pdf"
-            generate_pdf(report_text, out_file)
+            generate_pdf(report_text, out_file, assessment_data=assessment)
             logger.info("Сохранено: %s", out_file)
 
         logger.info("Готово. PDF в %s", output_dir)

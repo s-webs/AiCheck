@@ -134,6 +134,10 @@ def _validate_assessment(data: dict) -> None:
         "no_clues",
         "language",
         "structure_consistency",
+        "difficulty_balance",
+        "content_accuracy",
+        "formatting_quality",
+        "answer_key_quality",
     ]
     for s in required_scores:
         if s not in qs:
