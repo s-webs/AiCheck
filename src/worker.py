@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import cast
 
 from dotenv import load_dotenv
 
@@ -13,6 +14,7 @@ from .db import (
     get_task,
     init_db,
     insert_check_result,
+    update_check_result_pdfs,
     update_task_completed,
     update_task_error,
 )
@@ -23,6 +25,11 @@ from .translator import get_report_in_language
 load_dotenv()
 logger = logging.getLogger(__name__)
 POLL_INTERVAL = 5
+
+
+def _output_root() -> Path:
+    # Keep default compatible with README/CLI
+    return Path(os.getenv("AICHECK_OUTPUT_DIR", "output"))
 
 
 def process_one_task() -> bool:
@@ -61,6 +68,32 @@ def process_one_task() -> bool:
             assessment=assessment,
             file_name=file_name,
         )
+
+        # Generate PDFs (best-effort) and store file paths
+        pdf_paths: dict[str, str] = {}
+        out_root = _output_root()
+        try:
+            for lang in ("ru", "kk", "en"):
+                report_text = get_report_in_language(
+                    assessment, lang, api_key, detected_lang
+                )
+                lang_dir = out_root / f"{lang}_pdf"
+                lang_dir.mkdir(parents=True, exist_ok=True)
+                # ASCII-safe filename (avoid Cyrillic issues on some setups)
+                out_file = lang_dir / f"conclusion_{row_id}.pdf"
+                generate_pdf(report_text, out_file, assessment_data=assessment)
+                pdf_paths[lang] = str(out_file)
+        except Exception as e:
+            logger.warning("PDF generation failed for task %s: %s", task_id, e)
+
+        if pdf_paths:
+            update_check_result_pdfs(
+                row_id,
+                pdf_ru_path=pdf_paths.get("ru"),
+                pdf_kk_path=pdf_paths.get("kk"),
+                pdf_en_path=pdf_paths.get("en"),
+            )
+
         update_task_completed(
             task_id=task_id,
             result_id=row_id,

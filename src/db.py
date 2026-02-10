@@ -25,6 +25,14 @@ def _connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    """Add column via ALTER TABLE if missing (simple migrations)."""
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column in cols:
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db() -> None:
     """Create tables if they do not exist."""
     conn = _connection()
@@ -39,7 +47,10 @@ def init_db() -> None:
                 completion_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
                 assessment_json TEXT,
-                file_name TEXT
+                file_name TEXT,
+                pdf_ru_path TEXT,
+                pdf_kk_path TEXT,
+                pdf_en_path TEXT
             );
             CREATE TABLE IF NOT EXISTS check_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,6 +74,10 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
         """)
+        # Migrations for older DBs
+        _ensure_column(conn, "check_results", "pdf_ru_path", "pdf_ru_path TEXT")
+        _ensure_column(conn, "check_results", "pdf_kk_path", "pdf_kk_path TEXT")
+        _ensure_column(conn, "check_results", "pdf_en_path", "pdf_en_path TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -76,6 +91,9 @@ def insert_check_result(
     total_tokens: int,
     assessment: dict,
     file_name: str | None = None,
+    pdf_ru_path: str | None = None,
+    pdf_kk_path: str | None = None,
+    pdf_en_path: str | None = None,
 ) -> int:
     """Insert a check result and return its id."""
     conn = _connection()
@@ -84,8 +102,9 @@ def insert_check_result(
             """INSERT INTO check_results (
                 created_at, detected_language, risk_level,
                 prompt_tokens, completion_tokens, total_tokens,
-                assessment_json, file_name
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                assessment_json, file_name,
+                pdf_ru_path, pdf_kk_path, pdf_en_path
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.utcnow().isoformat() + "Z",
                 detected_language,
@@ -95,10 +114,35 @@ def insert_check_result(
                 total_tokens,
                 json.dumps(assessment, ensure_ascii=False),
                 file_name,
+                pdf_ru_path,
+                pdf_kk_path,
+                pdf_en_path,
             ),
         )
         conn.commit()
         return cur.lastrowid or 0
+    finally:
+        conn.close()
+
+
+def update_check_result_pdfs(
+    result_id: int,
+    pdf_ru_path: str | None = None,
+    pdf_kk_path: str | None = None,
+    pdf_en_path: str | None = None,
+) -> None:
+    """Update PDF paths for an existing result (non-destructive)."""
+    conn = _connection()
+    try:
+        conn.execute(
+            """UPDATE check_results
+               SET pdf_ru_path = COALESCE(?, pdf_ru_path),
+                   pdf_kk_path = COALESCE(?, pdf_kk_path),
+                   pdf_en_path = COALESCE(?, pdf_en_path)
+               WHERE id = ?""",
+            (pdf_ru_path, pdf_kk_path, pdf_en_path, result_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 

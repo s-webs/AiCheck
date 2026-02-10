@@ -6,14 +6,22 @@ import re
 import tempfile
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image as PILImage
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate, Paragraph, SimpleDocTemplate, Spacer, Image
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    PageTemplate,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Image as PlatypusImage,
+)
 from reportlab.lib.enums import TA_LEFT, TA_JUSTIFY, TA_CENTER
 from reportlab.pdfgen import canvas
 from io import BytesIO
@@ -128,7 +136,7 @@ def _process_header_image(header_path: Path) -> Path:
     Returns path to processed image (may be original if processing fails).
     """
     try:
-        img = Image.open(header_path).convert("RGBA")
+        img = PILImage.open(header_path).convert("RGBA")
         data = img.getdata()
         
         new_data = []
@@ -260,7 +268,7 @@ def generate_pdf(
         body_kw["fontName"] = CYRILLIC_FONT_NAME
     body_style = ParagraphStyle(parent=styles["Normal"], **body_kw)
     
-    # Create title style (bold, centered)
+    # Create title style (main heading: bold, centered, larger font)
     title_kw = {
         "name": "CyrillicTitle",
         "fontSize": 18,
@@ -279,7 +287,7 @@ def generate_pdf(
         "name": "CyrillicHeading1",
         "fontSize": 14,
         "leading": 18,
-        "alignment": TA_LEFT,
+        "alignment": TA_CENTER,  # centered headings
         "spaceAfter": 0.4 * cm,
         "spaceBefore": 0.3 * cm,
     }
@@ -293,7 +301,7 @@ def generate_pdf(
         "name": "CyrillicHeading2",
         "fontSize": 12,
         "leading": 16,
-        "alignment": TA_LEFT,
+        "alignment": TA_CENTER,  # centered sub-headings
         "spaceAfter": 0.3 * cm,
         "spaceBefore": 0.2 * cm,
     }
@@ -355,13 +363,13 @@ def generate_pdf(
                 
                 # Create quality scores chart
                 chart1_bytes = create_quality_scores_chart(quality_scores)
-                chart1_img = Image(BytesIO(chart1_bytes), width=16*cm, height=9*cm)
+                chart1_img = PlatypusImage(BytesIO(chart1_bytes), width=16 * cm, height=9 * cm)
                 story.append(chart1_img)
                 story.append(Spacer(1, 0.5 * cm))
                 
                 # Create risk distribution chart
                 chart2_bytes = create_risk_distribution_chart(risk_level, major_findings)
-                chart2_img = Image(BytesIO(chart2_bytes), width=14*cm, height=10*cm)
+                chart2_img = PlatypusImage(BytesIO(chart2_bytes), width=14 * cm, height=10 * cm)
                 story.append(chart2_img)
                 story.append(Spacer(1, 0.3 * cm))
                 
@@ -395,7 +403,6 @@ def generate_pdf(
     if stamp_path.exists() and last_page[0] > 0:
         try:
             from reportlab.pdfgen import canvas as reportlab_canvas
-            from io import BytesIO
             
             # Create stamp overlay
             stamp_buffer = BytesIO()
